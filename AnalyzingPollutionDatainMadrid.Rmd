@@ -1,0 +1,244 @@
+---
+title: "Group Project"
+author: "DataChefs"
+date: "12/12/2017"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=T}
+knitr::opts_chunk$set(echo = T)
+```
+### test result
+
+
+### create Data Table for Hourly Measurments from ####
+
+In this block we create a list of all the csv files in the data folder.
+Then we create of all the files rbind together while creating a column for each list extracted from the date in the csv name.
+Then last step we split the year and the month
+
+```{r raw_data_reading, echo=T}
+library(data.table)
+library(knitr)
+setwd("C:/Term_1/R_programing/project")
+filenames <- list.files("workgroup_data", pattern="*.csv", full.names=TRUE)
+ldf<-do.call(rbind, lapply(filenames, function(x) cbind(fread(x), Year=strsplit(regmatches(x, regexpr("*[0-9].[_][0-9]*", x)),split="_")[[1]][1],Month=strsplit(regmatches(x, regexpr("*[0-9].[_][0-9]*", x)),split="_")[[1]][2])))
+PTable <- data.table(ldf)
+PTable$parameter<-as.factor(PTable$parameter)
+str(PTable)
+```
+### Read Weather data from Excel
+```{r Read_Weather_data, echo=T}
+library(readxl) 
+weather_data<-data.table(read_excel('weather.xlsx'))
+str(weather_data)
+```
+### Create Data table for Polutants Types
+```{r create_table _pollutants, echo=T}
+PID<-c(01,06,07,08,09,10,12,14,20,30,35,37,38,39,42,43,44)
+PID
+PName<-c('SO2','CO','NO','NO2','PM2.5','PM10','NOx','O3','TOL','BEN','EBE','MXY','PXY','OXY','TCH','CH4','NMHC')
+pollutants<-data.table(cbind(PID,PName))
+str(pollutants)
+
+```
+
+
+### Get Daily Record from Hourly Pollutant Data
+Aggregate the mean of the measure value by day, month, year and pollutant
+
+```{r raw_data_get_daily, echo=T}
+Daily_Pollution_Data_by_Par<-PTable[ ,list(Value=mean(value, na.rm = T)),by=list(Month,Year,day,parameter)]
+str(Daily_Pollution_Data_by_Par)
+```
+### Merge Pollutants Names with Daily Pollutants Events
+```{r Merge_Pollutants_Daily_Values, echo=T}
+Daily_Pollution_Data_by_Par$parameter<-as.factor(Daily_Pollution_Data_by_Par$parameter)
+pollutants$PID<-as.factor(pollutants$PID)
+setkey(Daily_Pollution_Data_by_Par,parameter)
+setkey(pollutants,PID)
+Daily_Pollutants_Values<-pollutants[Daily_Pollution_Data_by_Par, nomatch=0]
+str(Daily_Pollutants_Values)
+```
+### Merging Pollutant daily values with daily weather data and create final dataset for Analysis
+```{r Merging_Weather_and _Pollutants, echo=T}
+library (dplyr)
+Daily_Pollutants_Values$Twenty<-rep(20, nrow(Daily_Pollutants_Values))
+Daily_Pollutants_Values$Time<-rep("000000",nrow(Daily_Pollutants_Values))
+Daily_Pollutants_Values$Year<- with(Daily_Pollutants_Values, paste0(Twenty,Year))
+Daily_Pollutants_Values$date <- as.character(with(Daily_Pollutants_Values, paste(Year, Month, day,sep="-")), "%Y-%m-%d")
+Daily_Pollutants_Values$date<- as.POSIXct(paste(Daily_Pollutants_Values$date, Daily_Pollutants_Values$Time), format="%Y-%m-%d %H%M%S",tz = "UTC")
+Daily_Pollutants_Values$Twenty<-NULL
+Daily_Pollutants_Values$Time<-NULL
+str(Daily_Pollutants_Values)
+attr(weather_data$date, "tzone")
+attr(Daily_Pollutants_Values$date, "tzone")
+str(weather_data)
+setkey(Daily_Pollutants_Values,date)
+setkey(weather_data,date)
+DWPD<-data.table(Daily_Pollutants_Values[weather_data, nomatch=0])
+str(DWPD)
+DWPD<-DWPD[PName %in% c('NO2','SO2','O3','PM2.5') , .(PID,PName,Month,Year,day,Value,date,temp_avg,temp_max,temp_min,precipitation,humidity,wind_avg_speed)]
+#DWPD<-DWPD [, list(Value := round(Value,4)),by(PID,PName,Month,Year,day,Value,date,temp_avg,temp_max,temp_min,precipitation,humidity,wind_avg_speed)]
+DWPD[1:10,]
+DWPD_wide<-dcast(DWPD, date + temp_avg +humidity+ wind_avg_speed+precipitation ~ PName,value.var = 'Value')
+str(DWPD_wide)
+```
+
+### Time series graphs with Loop
+```{r Time Series Graph Loop, echo=T}
+library(dygraphs)
+library(xts)
+TimeSeriesGraphs<-function(x)
+{
+  DWPD_wide_ts<-xts(x, order.by=x$date)
+myDyGraph <- dygraph(DWPD_wide_ts)
+str(DWPD_wide_ts)
+result <- lapply(1:length(DWPD_wide_ts), function(i) if (names(DWPD_wide_ts)[i]%in% c('cno2_ma','SO2','O3','PM2.5')) {dygraph(DWPD_wide_ts[,i], main = c(names(DWPD_wide_ts)[i]," Time Series"))%>%  dyRangeSelector() %>% dyOptions(colors = RColorBrewer::brewer.pal(3, "Set2")) 
+})
+return (result)
+}
+res<-TimeSeriesGraphs(DWPD_wide)
+res<-res[-which(sapply(res, is.null))]
+htmltools::tagList(res)
+
+
+```
+
+## Relations between Pollutants and weather data
+
+```{r echo=FALSE}
+library(ggplot2)
+library(plotly)
+library(magrittr)
+library(ggpubr)
+library(gridExtra)
+library(cowplot)
+require(ggplot2)
+shinyApp(
+  ui = fluidPage(
+    selectInput("Pollutant", label = "Select Pollutant",
+              choices = c('NO2'='NO2',"SO2"="SO2", "O3"="O3","PM2.5"="PM2.5" ), selected ='NO2' ),
+    selectInput("weatherVar", label = "Select Weather Variable",
+              choices = c("temp_avg"='temp_avg',"humidity"="humidity", "wind_avg_speed"="wind_avg_speed","precipitation"="precipitation" ), selected ='temp_avg' ),
+    plotOutput("cityplt")
+  ),
+  server = function(input, output) {
+  
+   # if(input$Pollutant=='NO2' & input$weatherVar=='temp_avg')
+    #{
+     # xaxis<-'NO2'
+      #yaxis<-'tem_avg'
+    #}
+    output$cityplt <- renderPlot({
+      ggplot(DWPD_wide, aes(x=DWPD_wide[[input$Pollutant]],y=DWPD_wide[[input$weatherVar]])) + geom_point(size=2.5)+
+    stat_smooth(method='auto')+
+  labs(x=input$Pollutant,y=input$weatherVar)
+    })
+  },
+  options = list(height = 800)
+
+)
+
+
+
+
+
+```
+
+
+### Corrolation Matrix
+```{r corrolation matrix, echo=T }
+library(corrplot)
+str(DWPD_wide)
+data_sample<-DWPD_wide[,.(NO2,SO2,O3,PM2.5)]
+head(data_sample)
+corrplot(cor(data_sample), method = 'number', tl.col = 'black')
+
+library(GGally)
+
+p<-GGally::ggpairs(data_sample,axisLabels = 'none',size=1,lwd=0.5,alpha=.5)
+
+ggplotly(p, width = 800, height = 500)
+```
+
+
+###Further Analysis
+```{r, echo=T}
+library(forecast)
+library(tseries)
+library(fpp)
+DWPD_wide$date2<-as.Date(DWPD_wide$date)
+ggplot(DWPD_wide, aes(date2, NO2)) + geom_line() + scale_x_date('month')  + ylab("NO2") +
+            xlab("")
+count_ts = ts(DWPD_wide[, c('NO2')])
+
+DWPD_wide$clean_NO2 = tsclean(count_ts)
+
+ggplot() +
+  geom_line(data = DWPD_wide, aes(x = date2, y = clean_NO2)) + ylab('Clean No2 Count')
+
+DWPD_wide$cnt_ma = ma(DWPD_wide$clean_NO2, order=7) # using the clean count with no outliers
+DWPD_wide$cnt_ma30 = ma(DWPD_wide$clean_NO2, order=30)
+
+ggplot() +
+  geom_line(data = DWPD_wide, aes(x = date2, y = clean_NO2, colour = "Counts")) +
+  geom_line(data = DWPD_wide, aes(x = date2, y = cnt_ma,   colour = "Weekly Moving Average"))  +
+  geom_line(data = DWPD_wide, aes(x = date2, y = cnt_ma30, colour = "Monthly Moving Average"))  +
+  ylab('No2 Count')
+
+ggplot() +
+  geom_line(data = DWPD_wide, aes(x = date2, y = cnt_ma,   colour = "Weekly Moving Average"))  +
+  ylab('No2 Count')
+
+ggplot() +
+  geom_line(data = DWPD_wide, aes(x = date2, y = cnt_ma30, colour = "Monthly Moving Average"))  +
+  ylab('No2 Count')
+
+allow.multiplicative.trend=TRUE 
+
+count_ma = ts(na.omit(DWPD_wide$cnt_ma), frequency=30)
+decomp = stl(count_ma, s.window="periodic")
+deseasonal_cnt <- seasadj(decomp)
+plot(decomp)
+
+Acf(count_ma, main='')
+
+Pacf(count_ma, main='')
+
+count_d1 = diff(deseasonal_cnt, differences = 1)
+plot(count_d1)
+adf.test(count_d1, alternative = "stationary")
+
+Acf(count_d1, main='ACF for Differenced Series')
+Pacf(count_d1, main='PACF for Differenced Series')
+
+auto.arima(deseasonal_cnt, seasonal=FALSE)
+
+fit<-auto.arima(deseasonal_cnt, seasonal=FALSE)
+tsdisplay(residuals(fit), lag.max=45, main='(1,1,1) Model Residuals')
+
+fit2 = arima(deseasonal_cnt, order=c(1,1,7))
+
+fit2
+
+tsdisplay(residuals(fit2), lag.max=15, main='Seasonal Model Residuals')
+
+fcast <- forecast(fit2, h=30)
+plot(fcast)
+
+hold <- window(ts(deseasonal_cnt), start=700)
+
+fit_no_holdout = arima(ts(deseasonal_cnt[-c(700:725)]), order=c(1,1,7))
+
+fcast_no_holdout <- forecast(fit_no_holdout,h=25)
+plot(fcast_no_holdout, main=" ")
+lines(ts(deseasonal_cnt))
+
+fit_w_seasonality = auto.arima(deseasonal_cnt, seasonal=TRUE)
+fit_w_seasonality
+
+seas_fcast <- forecast(fit_w_seasonality, h=30)
+plot(seas_fcast)
+```
